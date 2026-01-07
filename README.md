@@ -14,4 +14,9 @@ Elysium LSP is a custom language server for the [Cronus](https://github.com/elys
 
 Plugins live in `src/plugins`. Each plugin implements the `LspPlugin` trait. To enable or disable plugins from the CLI, pass one or more `--plugin` flags.
 
+### Available plugins
+
+- `init-deps` – understands `INIT_TARGET` macros, offering completions for dependency names and diagnostics for unknown or duplicated dependencies.
+- `hooks` – indexes `HOOK`/`HOOK_RUN` macros, providing completions when editing hook invocations and diagnostics for runs that refer to undefined hooks.
+
 To add a new plugin, create a module under `src/plugins`, implement the trait, and register it in `PluginChoice`/`instantiate_plugins` in `main.rs`.

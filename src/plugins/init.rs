@@ -1,17 +1,14 @@
 use std::collections::{BTreeSet, HashMap};
-use std::ffi::{c_char, c_uint, c_ulong, CStr, CString};
+use std::ffi::{c_char, c_uint, c_ulong, CString};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
 use clang_sys::{
-    clang_createIndex, clang_disposeIndex, clang_disposeString, clang_disposeTokens,
-    clang_disposeTranslationUnit, clang_getCString, clang_getCursorExtent, clang_getCursorKind,
-    clang_getCursorSpelling, clang_getFileLocation, clang_getRangeEnd, clang_getRangeStart,
-    clang_getTokenExtent, clang_getTokenKind, clang_getTokenSpelling,
-    clang_getTranslationUnitCursor, clang_parseTranslationUnit, clang_tokenize,
-    clang_visitChildren, CXChildVisitResult, CXChildVisit_Recurse, CXClientData, CXCursor,
-    CXCursor_MacroExpansion, CXSourceLocation, CXString, CXToken, CXToken_Literal,
-    CXTranslationUnit, CXTranslationUnit_DetailedPreprocessingRecord, CXUnsavedFile,
+    clang_createIndex, clang_disposeIndex, clang_disposeTranslationUnit, clang_getCursorKind,
+    clang_getCursorSpelling, clang_getTranslationUnitCursor, clang_getTokenKind,
+    clang_parseTranslationUnit, clang_visitChildren, CXChildVisitResult, CXChildVisit_Recurse,
+    CXClientData, CXCursor, CXCursor_MacroExpansion, CXToken_Literal, CXTranslationUnit,
+    CXTranslationUnit_DetailedPreprocessingRecord, CXUnsavedFile,
 };
 use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, Diagnostic, DiagnosticSeverity, Position, Range,
@@ -19,9 +16,11 @@ use tower_lsp::lsp_types::{
 
 use crate::compile_commands::CompileCommands;
 
-use super::LspPlugin;
-
-const DEFAULT_CLANG_ARGS: &[&str] = &["-Iinclude", "-std=gnu23"];
+use super::clang_utils::{
+    cursor_range, cxstring_to_string, split_macro_args, token_range, tokenize_cursor,
+    tokens_range, tokens_to_string,
+};
+use super::{range_contains, LspPlugin, DEFAULT_CLANG_ARGS};
 
 pub struct InitDependencyPlugin {
     compile_commands: Option<CompileCommands>,
@@ -283,124 +282,4 @@ unsafe fn build_target(collector: &TargetCollector, cursor: CXCursor) -> Option<
         dependency_region,
         dependency_slots,
     })
-}
-
-unsafe fn tokenize_cursor(tu: CXTranslationUnit, cursor: CXCursor) -> Option<Vec<CXToken>> {
-    let range = clang_getCursorExtent(cursor);
-    let mut tokens_ptr: *mut CXToken = std::ptr::null_mut();
-    let mut length: c_uint = 0;
-    clang_tokenize(tu, range, &mut tokens_ptr, &mut length);
-    if tokens_ptr.is_null() || length == 0 {
-        return None;
-    }
-    let tokens = std::slice::from_raw_parts(tokens_ptr, length as usize).to_vec();
-    clang_disposeTokens(tu, tokens_ptr, length);
-    Some(tokens)
-}
-
-unsafe fn split_macro_args(tu: CXTranslationUnit, tokens: &[CXToken]) -> Option<Vec<Vec<CXToken>>> {
-    let mut args = Vec::new();
-    let mut current = Vec::new();
-    let mut depth = 0;
-    let mut collecting = false;
-    for token in tokens {
-        let spelling = tokens_to_string(tu, &[*token]).unwrap_or_default();
-        match spelling.as_str() {
-            "(" if !collecting => collecting = true,
-            "(" => {
-                depth += 1;
-                current.push(*token);
-            }
-            ")" if depth == 0 => {
-                args.push(current.clone());
-                break;
-            }
-            ")" => {
-                depth -= 1;
-                current.push(*token);
-            }
-            "," if depth == 0 => {
-                args.push(current.clone());
-                current.clear();
-            }
-            _ if collecting => current.push(*token),
-            _ => {}
-        }
-    }
-    Some(args)
-}
-
-unsafe fn tokens_to_string(tu: CXTranslationUnit, tokens: &[CXToken]) -> Option<String> {
-    let mut buffer = String::new();
-    for token in tokens {
-        let spelling = clang_getTokenSpelling(tu, *token);
-        let text = cxstring_to_string(spelling);
-        buffer.push_str(&text);
-    }
-    Some(buffer)
-}
-
-unsafe fn tokens_range(tu: CXTranslationUnit, tokens: &[CXToken]) -> Option<Range> {
-    let first = tokens.first()?;
-    let last = tokens.last()?;
-    let start = token_range(tu, *first)?.start;
-    let end = token_range(tu, *last)?.end;
-    Some(Range { start, end })
-}
-
-unsafe fn token_range(tu: CXTranslationUnit, token: CXToken) -> Option<Range> {
-    let extent = clang_getTokenExtent(tu, token);
-    Some(Range {
-        start: cxlocation_to_position(clang_getRangeStart(extent))?,
-        end: cxlocation_to_position(clang_getRangeEnd(extent))?,
-    })
-}
-
-unsafe fn cxlocation_to_position(location: CXSourceLocation) -> Option<Position> {
-    let mut line = 0;
-    let mut column = 0;
-    let mut offset = 0;
-    clang_getFileLocation(
-        location,
-        std::ptr::null_mut(),
-        &mut line,
-        &mut column,
-        &mut offset,
-    );
-    Some(Position::new(
-        line.saturating_sub(1),
-        column.saturating_sub(1),
-    ))
-}
-
-unsafe fn cursor_range(cursor: CXCursor) -> Option<Range> {
-    let extent = clang_getCursorExtent(cursor);
-    Some(Range {
-        start: cxlocation_to_position(clang_getRangeStart(extent))?,
-        end: cxlocation_to_position(clang_getRangeEnd(extent))?,
-    })
-}
-
-unsafe fn cxstring_to_string(s: CXString) -> String {
-    let c_str = clang_getCString(s);
-    let result = if c_str.is_null() {
-        String::new()
-    } else {
-        CStr::from_ptr(c_str).to_string_lossy().into_owned()
-    };
-    clang_disposeString(s);
-    result
-}
-
-fn range_contains(range: &Range, pos: &Position) -> bool {
-    if pos.line < range.start.line || pos.line > range.end.line {
-        return false;
-    }
-    if pos.line == range.start.line && pos.character < range.start.character {
-        return false;
-    }
-    if pos.line == range.end.line && pos.character > range.end.character {
-        return false;
-    }
-    true
 }

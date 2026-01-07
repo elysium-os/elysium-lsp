@@ -8,7 +8,7 @@ use tracing_subscriber::EnvFilter;
 
 use crate::{
     lsp::ElysiumLsp,
-    plugins::{InitDependencyPlugin, LspPlugin},
+    plugins::{HookPlugin, InitDependencyPlugin, LspPlugin},
 };
 
 mod compile_commands;
@@ -19,6 +19,7 @@ mod plugins;
 #[value(rename_all = "kebab_case")]
 enum PluginChoice {
     InitDeps,
+    Hooks,
 }
 
 #[derive(Parser, Debug)]
@@ -33,7 +34,11 @@ struct Args {
     log_level: Option<String>,
 
     /// Plugins to enable (repeatable)
-    #[arg(long = "plugin", value_enum, default_values_t = [PluginChoice::InitDeps])]
+    #[arg(
+        long = "plugin",
+        value_enum,
+        default_values_t = [PluginChoice::InitDeps, PluginChoice::Hooks]
+    )]
     plugins: Vec<PluginChoice>,
 }
 
@@ -66,6 +71,7 @@ impl PluginChoice {
     fn instantiate(&self, project_root: &Path) -> Result<Box<dyn LspPlugin>> {
         match self {
             PluginChoice::InitDeps => Ok(Box::new(InitDependencyPlugin::new(project_root)?)),
+            PluginChoice::Hooks => Ok(Box::new(HookPlugin::new(project_root)?)),
         }
     }
 }
