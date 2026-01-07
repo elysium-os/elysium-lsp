@@ -38,11 +38,18 @@ struct HookDefinition {
     name: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HookInvocationKind {
+    Definition,
+    Run,
+}
+
 #[derive(Clone)]
 struct HookInvocation {
     name: String,
     name_range: Range,
     argument_region: Range,
+    kind: HookInvocationKind,
 }
 
 impl HookPlugin {
@@ -127,7 +134,11 @@ impl LspPlugin for HookPlugin {
         let mut diag_map: HashMap<PathBuf, Vec<Diagnostic>> = HashMap::new();
 
         for (file, data) in &self.files {
-            for invocation in &data.invocations {
+            for invocation in data
+                .invocations
+                .iter()
+                .filter(|invocation| invocation.kind == HookInvocationKind::Run)
+            {
                 if invocation.name.is_empty() {
                     continue;
                 }
@@ -237,9 +248,16 @@ extern "C" fn visit_hooks(
                     if let Some(definition) = build_hook_definition(collector, cursor) {
                         collector.definitions.push(definition);
                     }
+                    if let Some(invocation) =
+                        build_hook_usage(collector, cursor, HookInvocationKind::Definition)
+                    {
+                        collector.invocations.push(invocation);
+                    }
                 }
                 "HOOK_RUN" => {
-                    if let Some(invocation) = build_hook_invocation(collector, cursor) {
+                    if let Some(invocation) =
+                        build_hook_usage(collector, cursor, HookInvocationKind::Run)
+                    {
                         collector.invocations.push(invocation);
                     }
                 }
@@ -266,9 +284,10 @@ unsafe fn build_hook_definition(
     Some(HookDefinition { name })
 }
 
-unsafe fn build_hook_invocation(
+unsafe fn build_hook_usage(
     collector: &HookCollector,
     cursor: CXCursor,
+    kind: HookInvocationKind,
 ) -> Option<HookInvocation> {
     let tokens = tokenize_cursor(collector.tu, cursor)?;
     let args = split_macro_args(collector.tu, &tokens)?;
@@ -291,6 +310,7 @@ unsafe fn build_hook_invocation(
         name,
         name_range,
         argument_region,
+        kind,
     })
 }
 
